@@ -46,10 +46,12 @@ def fetch_price_history(coin_id: str, vs_currency="idr", days=200):
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
     params = {"vs_currency": vs_currency, "days": days}
     res = requests.get(url, params=params).json()
-    prices = pd.DataFrame(res["prices"], columns=["timestamp","price"])
+    # Jika tidak ada key 'prices', kembalikan DataFrame kosong
+    if "prices" not in res or not res["prices"]:
+        return pd.DataFrame()
+    prices = pd.DataFrame(res["prices"], columns=["timestamp", "price"])
     prices["timestamp"] = pd.to_datetime(prices["timestamp"], unit="ms")
-    prices = prices.set_index("timestamp")
-    prices = prices.rename(columns={"price":"Close"})
+    prices = prices.set_index("timestamp").rename(columns={"price": "Close"})
     return prices
 
 def compute_indicators(df: pd.DataFrame):
@@ -102,6 +104,16 @@ for _, row in top.iterrows():
 
     # tarik historis & indikator
     hist = fetch_price_history(coin_id, days=200)
+  rows = []
+for _, row in top.iterrows():
+    coin_id = row["id"]
+    # ... ambil price, pct24, status harian ...
+    hist = fetch_price_history(coin_id, days=200)
+    if hist.empty:
+        # Lewatkan coin ini jika tidak ada data historis
+        continue
+    ind = compute_indicators(hist)
+    # ... lanjutkan prediksi & indikator seperti biasa ...
     ind  = compute_indicators(hist)
 
     # short-term prediksi linear regression 3 hari
