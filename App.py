@@ -104,7 +104,7 @@ for _, row in top.iterrows():
 
     # tarik historis & indikator
     hist = fetch_price_history(coin_id, days=200)
-  rows = []
+rows = []
 for _, row in top.iterrows():
     coin_id = row["id"]
     # ... ambil price, pct24, status harian ...
