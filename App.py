@@ -1,68 +1,67 @@
 import streamlit as st
+import requests
 import pandas as pd
-import yfinance as yf
 import numpy as np
 
-def calculate_moving_averages(data):
-    data['MA3'] = data['Close'].rolling(window=3).mean()
-    data['MA7'] = data['Close'].rolling(window=7).mean()
-    data = data.dropna()
-    return data
+# 1) Halaman & Dark-mode CSS
+st.set_page_config(
+    page_title="CryptoPredictor Forecast",
+    layout="wide",
+)
+st.markdown("""
+    <style>
+    body {background-color: #0E1117; color: #ECEDEF;}
+    .stApp {background-color: #0E1117;}
+    .css-1avcm0n, .css-1inwz65 {background-color: #1A1C23;}
+    table, th, td {color: #ECEDEF !important;}
+    </style>
+    """, unsafe_allow_html=True)
 
-def get_status(row):
-    if 'MA3' not in row or 'MA7' not in row:
-        return 'No data'
-    if pd.isna(row['MA3']) or pd.isna(row['MA7']):
-        return 'No data'
-    return 'Bullish' if row['MA3'] > row['MA7'] else 'Bearish'
+st.title("CryptoPredictor Forecast (Top 50 + 3-Day Prediction)")
 
-def predict_future_prices(data, days=3):
-    # Gunakan rata-rata selisih harga penutupan harian untuk prediksi sederhana
-    data['diff'] = data['Close'].diff()
-    avg_change = data['diff'].mean()
-    last_price = data['Close'].iloc[-1]
+# 2) Ambil data Top 50 koin dari CoinGecko
+@st.cache_data(ttl=300)
+def fetch_top_coins(vs_currency="idr", per_page=50):
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": vs_currency,
+        "order": "market_cap_desc",
+        "per_page": per_page,
+        "page": 1,
+        "sparkline": False,
+        "price_change_percentage": "24h"
+    }
+    r = requests.get(url, params=params)
+    return pd.DataFrame(r.json())
 
-    future_dates = pd.date_range(start=data.index[-1] + pd.Timedelta(days=1), periods=days)
-    predictions = [last_price + avg_change * (i + 1) for i in range(days)]
+df = fetch_top_coins()
 
-    pred_df = pd.DataFrame({'Predicted Close': predictions}, index=future_dates)
-    return pred_df
+# 3) Status Bullish / Bearish
+df["Status"] = df["price_change_percentage_24h"].apply(
+    lambda x: "Bullish" if x and x > 0 else "Bearish"
+)
 
-def main():
-    st.set_page_config(page_title="Crypto Analyzer + Prediksi", layout="wide")
-    st.title('Crypto Analyzer + Prediksi Harga Sederhana')
+# 4) Prediksi 3 hari ke depan
+#    asumsi: perubahan harian rata-rata ≈ perubahan 24h terakhir
+#    Prediksi price_tomorrow = current_price * (1 + pct24h/100)
+df["pct24"] = df["price_change_percentage_24h"] / 100.0
+for i in range(1, 4):
+    df[f"Prediksi +{i} Hari (IDR)"] = (
+        df["current_price"] * (1 + df["pct24"] * i)
+    ).round(2)
 
-    symbol = st.text_input('Masukkan symbol crypto (contoh: BTC-USD, ETH-USD, XRP-USD)', 'BTC-USD')
-    period = st.selectbox('Pilih periode data', ['7d', '14d', '30d', '60d', '90d', '180d', '1y'], index=2)
-    interval = st.selectbox('Pilih interval', ['1h', '2h', '4h', '1d'], index=3)
+# 5) Seleksi kolom & rename
+display_cols = [
+    "symbol", "current_price", "price_change_percentage_24h", "Status",
+    "Prediksi +1 Hari (IDR)", "Prediksi +2 Hari (IDR)", "Prediksi +3 Hari (IDR)"
+]
+df_display = df[display_cols].rename(columns={
+    "symbol": "Koin",
+    "current_price": "Harga (IDR)",
+    "price_change_percentage_24h": "24 h (%)",
+})
 
-    if st.button('Analisa & Prediksi'):
-        with st.spinner('Mengambil data...'):
-            try:
-                data = yf.download(symbol, period=period, interval=interval)
-                if data.empty:
-                    st.error('Data tidak ditemukan.')
-                    return
+# 6) Tampilkan
+st.dataframe(df_display, use_container_width=True)
 
-                data = calculate_moving_averages(data)
-                data['Status'] = data.apply(get_status, axis=1)
-
-                st.subheader('Data Harga + MA + Status')
-                st.dataframe(data[['Close', 'MA3', 'MA7', 'Status']])
-
-                st.subheader('Status Terakhir:')
-                st.success(f"{symbol} sedang: {data.iloc[-1]['Status']}")
-
-                st.line_chart(data[['Close', 'MA3', 'MA7']])
-
-                # Prediksi
-                pred_df = predict_future_prices(data)
-                st.subheader('Prediksi Harga 3 Hari ke Depan:')
-                st.dataframe(pred_df)
-                st.line_chart(pred_df)
-
-            except Exception as e:
-                st.error(f"Terjadi error: {e}")
-
-if __name__ == "__main__":
-    main()
+st.caption("Data: CoinGecko • Forecast: simple linear extrapolation of 24 h change")
