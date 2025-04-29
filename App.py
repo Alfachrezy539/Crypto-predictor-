@@ -1,85 +1,68 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
+import numpy as np
 
-# Konfigurasi tampilan halaman
-st.set_page_config(page_title="Crypto Analyzer", page_icon=":money_with_wings:", layout="wide", initial_sidebar_state="expanded")
-
-# Title
-st.title('Crypto Analyzer :money_with_wings:')
-st.markdown("Cek sinyal Bullish/Bearish berdasarkan Moving Average sederhana.")
-
-# Fungsi untuk ambil data harga
-def get_data(symbol):
-    try:
-        data = yf.download(symbol, period="7d", interval="1d", progress=False, threads=False)
-        return data
-    except Exception as e:
-        st.error(f"Error fetching data for {symbol}: {e}")
-        return pd.DataFrame()
-
-# Hitung MA3 dan MA7
-def calculate_ma(data):
+def calculate_moving_averages(data):
     data['MA3'] = data['Close'].rolling(window=3).mean()
     data['MA7'] = data['Close'].rolling(window=7).mean()
+    data = data.dropna()
     return data
 
-# Tentukan status Bullish/Bearish
 def get_status(row):
+    if 'MA3' not in row or 'MA7' not in row:
+        return 'No data'
     if pd.isna(row['MA3']) or pd.isna(row['MA7']):
-        return "WAIT"
-    elif row['MA3'] > row['MA7']:
-        return "BULLISH (BUY)"
-    else:
-        return "BEARISH (SELL)"
+        return 'No data'
+    return 'Bullish' if row['MA3'] > row['MA7'] else 'Bearish'
 
-# Daftar koin yang dipantau
-coins = {
-    'BTC-USD': 'Bitcoin',
-    'ETH-USD': 'Ethereum',
-    'PEPE-USD': 'Pepe',
-    'XRP-USD': 'XRP',
-    'HBAR-USD': 'Hedera'
-}
+def predict_future_prices(data, days=3):
+    # Gunakan rata-rata selisih harga penutupan harian untuk prediksi sederhana
+    data['diff'] = data['Close'].diff()
+    avg_change = data['diff'].mean()
+    last_price = data['Close'].iloc[-1]
 
-# Load data semua koin
-results = []
-for symbol, name in coins.items():
-    data = get_data(symbol)
-    if not data.empty:
-        data = calculate_ma(data)
-        if not data.empty and len(data) >= 1:
-            latest = data.iloc[-1]
-            status = get_status(latest)
-            results.append({
-                'Coin': name,
-                'Current Price (USD)': round(latest['Close'], 6) if not pd.isna(latest['Close']) else None,
-                'MA 3 Hari': round(latest['MA3'], 6) if not pd.isna(latest['MA3']) else None,
-                'MA 7 Hari': round(latest['MA7'], 6) if not pd.isna(latest['MA7']) else None,
-                'Status': status
-            })
-        else:
-            st.warning(f"Data tidak cukup untuk {name}.")
-    else:
-        st.warning(f"Tidak bisa mengambil data untuk {name}.")
+    future_dates = pd.date_range(start=data.index[-1] + pd.Timedelta(days=1), periods=days)
+    predictions = [last_price + avg_change * (i + 1) for i in range(days)]
 
-# Tampilkan tabel hasil
-if results:
-    df = pd.DataFrame(results)
+    pred_df = pd.DataFrame({'Predicted Close': predictions}, index=future_dates)
+    return pred_df
 
-    def highlight_status(val):
-        if val == "BULLISH (BUY)":
-            return 'background-color: #00FF0044; font-weight: bold;'
-        elif val == "BEARISH (SELL)":
-            return 'background-color: #FF000044; font-weight: bold;'
-        elif val == "WAIT":
-            return 'background-color: #FFFF0044; font-weight: bold;'
-        else:
-            return ''
+def main():
+    st.set_page_config(page_title="Crypto Analyzer + Prediksi", layout="wide")
+    st.title('Crypto Analyzer + Prediksi Harga Sederhana')
 
-    st.dataframe(df.style.applymap(highlight_status, subset=['Status']), use_container_width=True)
-else:
-    st.info("Belum ada data yang bisa ditampilkan.")
+    symbol = st.text_input('Masukkan symbol crypto (contoh: BTC-USD, ETH-USD, XRP-USD)', 'BTC-USD')
+    period = st.selectbox('Pilih periode data', ['7d', '14d', '30d', '60d', '90d', '180d', '1y'], index=2)
+    interval = st.selectbox('Pilih interval', ['1h', '2h', '4h', '1d'], index=3)
 
-# Footer
-st.caption("Data dari Yahoo Finance | App by Your Assistant")
+    if st.button('Analisa & Prediksi'):
+        with st.spinner('Mengambil data...'):
+            try:
+                data = yf.download(symbol, period=period, interval=interval)
+                if data.empty:
+                    st.error('Data tidak ditemukan.')
+                    return
+
+                data = calculate_moving_averages(data)
+                data['Status'] = data.apply(get_status, axis=1)
+
+                st.subheader('Data Harga + MA + Status')
+                st.dataframe(data[['Close', 'MA3', 'MA7', 'Status']])
+
+                st.subheader('Status Terakhir:')
+                st.success(f"{symbol} sedang: {data.iloc[-1]['Status']}")
+
+                st.line_chart(data[['Close', 'MA3', 'MA7']])
+
+                # Prediksi
+                pred_df = predict_future_prices(data)
+                st.subheader('Prediksi Harga 3 Hari ke Depan:')
+                st.dataframe(pred_df)
+                st.line_chart(pred_df)
+
+            except Exception as e:
+                st.error(f"Terjadi error: {e}")
+
+if __name__ == "__main__":
+    main()
