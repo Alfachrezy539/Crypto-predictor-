@@ -74,6 +74,19 @@ def get_usd_to_idr():
     return res["rates"]["IDR"]
 
 coins = get_top_coins(limit=50)
+@st.cache_data
+def get_usd_to_idr():
+    try:
+        url = "https://api.exchangerate.host/latest?base=USD"
+        res = requests.get(url).json()
+        if "rates" in res and "IDR" in res["rates"]:
+            return res["rates"]["IDR"]
+        else:
+            st.warning("Gagal mendapatkan kurs USD ke IDR. Menggunakan default 16000.")
+            return 16000
+    except:
+        st.warning("Terjadi kesalahan saat mengambil data kurs.")
+        return 16000
 usd_to_idr = get_usd_to_idr()
 
 results = []
