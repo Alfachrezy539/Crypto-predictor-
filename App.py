@@ -2,73 +2,127 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
-from datetime import datetime
-from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
+import datetime
 
-st.set_page_config(page_title="Crypto Analyzer", layout="wide")
-st.title("Crypto Analyzer - Top 10 Coins with Prediction")
-st.markdown("Menampilkan 10 koin teratas, status bullish/bearish, dan prediksi jangka pendek.")
+st.set_page_config(page_title="Crypto Predictor", layout="wide", initial_sidebar_state="expanded")
 
-@st.cache_data(show_spinner=False)
-def fetch_top_coins(limit=10):
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {"vs_currency": "usd", "order": "market_cap_desc", "per_page": limit, "page": 1}
-    return requests.get(url, params=params).json()
+# DARK MODE
+dark_mode_css = """
+    <style>
+    body, .stApp {
+        background-color: #0e1117;
+        color: #ffffff;
+    }
+    .css-18e3th9 {
+        background-color: #0e1117;
+    }
+    table {
+        color: #ffffff !important;
+    }
+    </style>
+"""
+st.markdown(dark_mode_css, unsafe_allow_html=True)
 
-@st.cache_data(show_spinner=False)
-def fetch_price_history(coin_id, days=200, vs_currency="usd"):
+# === Helper Functions ===
+
+@st.cache_data(ttl=3600)
+def fetch_top_coins(n=50):
+    url = f"https://api.coingecko.com/api/v3/coins/markets"
+    params = {"vs_currency": "usd", "order": "market_cap_desc", "per_page": n, "page": 1}
+    res = requests.get(url, params=params)
+    return res.json()
+
+@st.cache_data(ttl=3600)
+def fetch_price_history(coin_id, vs_currency="usd", days=200):
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
     params = {"vs_currency": vs_currency, "days": days}
     res = requests.get(url, params=params).json()
     if "prices" not in res:
-        return pd.DataFrame()
+        return None
     prices = pd.DataFrame(res["prices"], columns=["timestamp", "price"])
     prices["timestamp"] = pd.to_datetime(prices["timestamp"], unit="ms")
     prices = prices.set_index("timestamp")
     prices = prices.rename(columns={"price": "Close"})
     return prices
 
-@st.cache_data(show_spinner=False)
-def predict_next_days(prices, days_ahead=3):
-    if len(prices) < days_ahead:
-        return None
-    df = prices.reset_index()
-    df["t"] = np.arange(len(df))
-    model = LinearRegression()
-    model.fit(df[["t"]], df["Close"])
-    future_t = np.array([[len(df) + i] for i in range(days_ahead)])
-    preds = model.predict(future_t)
-    return round(preds[-1], 4)
+def predict_price_rf(prices, days_forward=3):
+    df = prices.copy()
+    df['Target'] = df['Close'].shift(-days_forward)
+    df.dropna(inplace=True)
 
-# Ambil data top coins
-coins = fetch_top_coins(10)
+    X = []
+    y = []
 
-rows = []
+    for i in range(30, len(df)):
+        X.append(df['Close'].iloc[i-30:i].values)
+        y.append(df['Target'].iloc[i])
+
+    X, y = np.array(X), np.array(y)
+    if len(X) < 10:
+        return None, None
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+
+    last_30 = df['Close'].iloc[-30:].values.reshape(1, -1)
+    prediction = model.predict(last_30)[0]
+
+    mse = mean_squared_error(y_test, model.predict(X_test))
+    return prediction, mse
+
+# === UI ===
+
+st.title("Crypto Price Predictor (Random Forest + Top 50 Coins)")
+st.markdown("Prediksi harga 3 hari ke depan untuk 50 koin teratas menggunakan model Random Forest Regressor.")
+
+# === Proses koin ===
+
+coins = fetch_top_coins(50)
+data_rows = []
+
 for coin in coins:
     coin_id = coin["id"]
-    symbol = coin["symbol"].upper()
     name = coin["name"]
-    current = coin["current_price"]
-    pct24 = coin["price_change_percentage_24h"]
-    status = "Bullish" if pct24 > 0 else "Bearish"
-    
-    hist = fetch_price_history(coin_id)
-    if hist.empty:
-        pred = "N/A"
-    else:
-        pred = predict_next_days(hist)
+    symbol = coin["symbol"].upper()
+    price = coin["current_price"]
+    change_24h = coin["price_change_percentage_24h"]
 
-    rows.append({
-        "Coin": f"{name} ({symbol})",
-        "Harga Sekarang": f"${current:,.4f}",
-        "24h %": f"{pct24:.2f}%",
+    status = "Bullish" if change_24h and change_24h > 0 else "Bearish"
+
+    hist = fetch_price_history(coin_id, days=200)
+    if hist is None or len(hist) < 60:
+        continue
+
+    pred_price, mse = predict_price_rf(hist, days_forward=3)
+    if pred_price is None:
+        continue
+
+    last_close = hist["Close"].iloc[-1]
+    diff_pct = ((pred_price - last_close) / last_close) * 100
+
+    trend = "Bullish" if pred_price > last_close else "Bearish"
+
+    data_rows.append({
+        "Coin": name,
+        "Symbol": symbol,
+        "Current Price": f"${price:,.4f}",
+        "Predicted Price (3d)": f"${pred_price:,.4f}",
+        "Change (3d)": f"{diff_pct:.2f}%",
         "Status": status,
-        "Prediksi 3 Hari Kedepan": f"${pred}" if pred != "N/A" else "Data tidak cukup"
+        "Predicted Trend": trend
     })
 
-# Tampilkan hasil
-df_result = pd.DataFrame(rows)
-st.dataframe(df_result.style.applymap(
-    lambda x: "color:green" if "Bullish" in str(x) else ("color:red" if "Bearish" in str(x) else ""),
-    subset=["Status"]
-))
+# === Tampilkan tabel ===
+
+df_result = pd.DataFrame(data_rows)
+if not df_result.empty:
+    st.dataframe(df_result.style.applymap(
+        lambda v: "color: green" if isinstance(v, str) and "Bullish" in v else "color: red"
+    ))
+else:
+    st.warning("Tidak ada data yang berhasil diproses. Mungkin karena API sedang down atau data historis tidak lengkap.")
